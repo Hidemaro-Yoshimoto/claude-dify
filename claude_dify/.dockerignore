@@ -1,0 +1,43 @@
+# Node modules
+node_modules/
+npm-debug.log*
+
+# Build artifacts
+dist/
+*.tsbuildinfo
+
+# Environment files
+.env*
+!.env.example
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+docs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Test coverage
+coverage/
+
+# Temporary files
+tmp/
+temp/
+
+# Docker files
+Dockerfile*
+docker-compose*
+.dockerignore

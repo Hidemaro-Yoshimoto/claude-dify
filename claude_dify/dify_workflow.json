@@ -1,0 +1,345 @@
+{
+  "app": {
+    "name": "Claude Dify Checker Workflow",
+    "description": "Automated website analysis workflow using Playwright and LLM evaluation",
+    "version": "1.0.0",
+    "mode": "workflow"
+  },
+  "workflow": {
+    "nodes": [
+      {
+        "id": "start",
+        "type": "start",
+        "position": { "x": 100, "y": 100 },
+        "data": {
+          "title": "Start",
+          "variables": [
+            {
+              "variable": "url",
+              "type": "text-input",
+              "label": "Website URL to analyze",
+              "required": true,
+              "max_length": 500
+            },
+            {
+              "variable": "csv_file",
+              "type": "file",
+              "label": "CSV file with URLs (optional)",
+              "required": false,
+              "file_types": [".csv"]
+            },
+            {
+              "variable": "viewports",
+              "type": "select",
+              "label": "Screenshot Viewports",
+              "required": false,
+              "default": "all",
+              "options": [
+                { "label": "All (Mobile, Tablet, Desktop, 4K)", "value": "all" },
+                { "label": "Mobile + Desktop", "value": "mobile_desktop" },
+                { "label": "Desktop Only", "value": "desktop" }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "id": "check_input_type",
+        "type": "if-else",
+        "position": { "x": 300, "y": 100 },
+        "data": {
+          "title": "Check Input Type",
+          "conditions": [
+            {
+              "id": "single_url",
+              "comparison_operator": "is not empty",
+              "variable": "{{#start.url#}}"
+            }
+          ],
+          "logical_operator": "and"
+        }
+      },
+      {
+        "id": "csv_extractor",
+        "type": "document-extractor",
+        "position": { "x": 300, "y": 300 },
+        "data": {
+          "title": "Extract URLs from CSV",
+          "extraction_mode": "automatic",
+          "variable": "{{#start.csv_file#}}"
+        }
+      },
+      {
+        "id": "loop_urls",
+        "type": "loop",
+        "position": { "x": 500, "y": 300 },
+        "data": {
+          "title": "Process Each URL",
+          "iteration_mode": "parallel",
+          "max_parallel": 5,
+          "variable": "{{#csv_extractor.text#}}"
+        }
+      },
+      {
+        "id": "call_playwright_api",
+        "type": "http-request",
+        "position": { "x": 500, "y": 100 },
+        "data": {
+          "title": "Analyze with Playwright",
+          "method": "POST",
+          "url": "https://YOUR_CLOUD_RUN_URL/analyze",
+          "headers": {
+            "Content-Type": "application/json",
+            "User-Agent": "Dify-Workflow/1.0"
+          },
+          "body": {
+            "url": "{{#start.url#}}{{#loop_urls.item#}}",
+            "viewports": [
+              {
+                "name": "mobile",
+                "width": 375,
+                "height": 667
+              },
+              {
+                "name": "tablet", 
+                "width": 768,
+                "height": 1024
+              },
+              {
+                "name": "desktop",
+                "width": 1920,
+                "height": 1080
+              },
+              {
+                "name": "4k",
+                "width": 3840,
+                "height": 2160
+              }
+            ],
+            "options": {
+              "timeout": 30000,
+              "generateReport": true
+            }
+          },
+          "timeout": 60
+        }
+      },
+      {
+        "id": "extract_issues",
+        "type": "code",
+        "position": { "x": 700, "y": 100 },
+        "data": {
+          "title": "Extract Critical Issues",
+          "code_language": "python3",
+          "code": "import json\n\ndef main(playwright_response: str) -> dict:\n    try:\n        data = json.loads(playwright_response)\n        \n        if not data.get('success'):\n            return {\n                'error': 'Playwright analysis failed',\n                'details': data.get('error', 'Unknown error')\n            }\n        \n        analysis = data.get('analysis', {})\n        categories = analysis.get('categories', {})\n        \n        # Extract critical and major issues\n        critical_issues = []\n        major_issues = []\n        \n        for category_name, items in categories.items():\n            for item in items:\n                if item.get('status') == 'fail':\n                    issue_data = {\n                        'category': category_name,\n                        'name': item.get('name'),\n                        'impact': item.get('impact'),\n                        'details': item.get('details'),\n                        'recommendations': item.get('recommendations', [])\n                    }\n                    \n                    if item.get('impact') == 'critical':\n                        critical_issues.append(issue_data)\n                    elif item.get('impact') == 'major':\n                        major_issues.append(issue_data)\n        \n        # Prepare summary for LLM\n        summary = {\n            'url': data.get('url'),\n            'overall_score': analysis.get('summary', {}).get('score', 0),\n            'total_issues': len(critical_issues) + len(major_issues),\n            'critical_count': len(critical_issues),\n            'major_count': len(major_issues),\n            'critical_issues': critical_issues[:5],  # Limit for token efficiency\n            'major_issues': major_issues[:10],\n            'performance': data.get('performance', {}),\n            'report_url': data.get('reportUrl')\n        }\n        \n        # Token optimization - create concise text for LLM\n        llm_input = f\"\"\"Website: {summary['url']}\nScore: {summary['overall_score']}%\nCritical Issues ({summary['critical_count']}):\n\"\"\"\n        \n        for issue in summary['critical_issues']:\n            llm_input += f\"- {issue['category']}: {issue['name']}\\n\"\n        \n        llm_input += f\"\\nMajor Issues ({summary['major_count']}):\\n\"\n        for issue in summary['major_issues']:\n            llm_input += f\"- {issue['category']}: {issue['name']}\\n\"\n        \n        return {\n            'summary': summary,\n            'llm_input': llm_input,\n            'needs_deep_analysis': summary['critical_count'] > 0 or summary['overall_score'] < 70\n        }\n    \n    except Exception as e:\n        return {\n            'error': f'Processing failed: {str(e)}',\n            'llm_input': 'Analysis data processing failed'\n        }\n",
+          "inputs": {
+            "playwright_response": "{{#call_playwright_api.body#}}"
+          }
+        }
+      },
+      {
+        "id": "gemini_analysis",
+        "type": "llm",
+        "position": { "x": 900, "y": 100 },
+        "data": {
+          "title": "Gemini 2.5 Flash Analysis",
+          "model": {
+            "provider": "google",
+            "name": "gemini-2.5-flash",
+            "completion_params": {
+              "temperature": 0.1,
+              "max_tokens": 1000
+            }
+          },
+          "prompt_template": [
+            {
+              "role": "system",
+              "text": "You are a web accessibility and performance expert. Analyze the website issues and provide prioritized recommendations. Keep responses concise and actionable."
+            },
+            {
+              "role": "user", 
+              "text": "Analyze this website assessment:\n\n{{#extract_issues.llm_input#}}\n\nProvide:\n1. Top 3 priority fixes\n2. Estimated improvement potential\n3. Implementation difficulty (1-5 scale)\n4. Whether deep technical analysis is needed\n\nRespond in JSON format with keys: priorities, improvement_potential, avg_difficulty, needs_technical_review"
+            }
+          ]
+        }
+      },
+      {
+        "id": "check_deep_analysis",
+        "type": "if-else",
+        "position": { "x": 1100, "y": 100 },
+        "data": {
+          "title": "Need Deep Analysis?",
+          "conditions": [
+            {
+              "id": "needs_deep",
+              "comparison_operator": "is",
+              "variable": "{{#extract_issues.needs_deep_analysis#}}",
+              "value": "true"
+            }
+          ],
+          "logical_operator": "or"
+        }
+      },
+      {
+        "id": "gpt_deep_analysis",
+        "type": "llm",
+        "position": { "x": 1100, "y": 300 },
+        "data": {
+          "title": "GPT-4o Mini Deep Analysis",
+          "model": {
+            "provider": "openai",
+            "name": "gpt-4o-mini",
+            "completion_params": {
+              "temperature": 0.2,
+              "max_tokens": 1500
+            }
+          },
+          "prompt_template": [
+            {
+              "role": "system",
+              "text": "You are a senior web developer and accessibility expert. Provide detailed technical recommendations for critical website issues."
+            },
+            {
+              "role": "user",
+              "text": "Website analysis results:\n{{#extract_issues.summary#}}\n\nPrevious analysis:\n{{#gemini_analysis.text#}}\n\nProvide detailed technical implementation steps for the top 3 critical issues. Include:\n1. Specific code examples\n2. Testing strategies\n3. Tools and resources\n4. Expected impact on metrics\n\nFormat as structured recommendations."
+            }
+          ]
+        }
+      },
+      {
+        "id": "generate_report",
+        "type": "template",
+        "position": { "x": 1300, "y": 100 },
+        "data": {
+          "title": "Generate HTML Report",
+          "template": "<!DOCTYPE html>\n<html>\n<head>\n    <title>Website Analysis Report</title>\n    <style>\n        body { font-family: Arial, sans-serif; margin: 40px; }\n        .header { background: #4f46e5; color: white; padding: 20px; border-radius: 8px; }\n        .score { font-size: 2em; font-weight: bold; }\n        .section { margin: 20px 0; padding: 20px; border: 1px solid #e5e7eb; border-radius: 8px; }\n        .critical { border-left: 4px solid #ef4444; }\n        .major { border-left: 4px solid #f59e0b; }\n        .recommendation { background: #f0f9ff; padding: 15px; margin: 10px 0; border-radius: 6px; }\n    </style>\n</head>\n<body>\n    <div class=\"header\">\n        <h1>Website Analysis Report</h1>\n        <p>URL: {{#extract_issues.summary.url#}}</p>\n        <div class=\"score\">Score: {{#extract_issues.summary.overall_score#}}%</div>\n    </div>\n    \n    <div class=\"section\">\n        <h2>Executive Summary</h2>\n        <p><strong>Critical Issues:</strong> {{#extract_issues.summary.critical_count#}}</p>\n        <p><strong>Major Issues:</strong> {{#extract_issues.summary.major_count#}}</p>\n        <p><strong>Load Time:</strong> {{#extract_issues.summary.performance.loadTime#}}ms</p>\n    </div>\n    \n    <div class=\"section\">\n        <h2>AI Analysis</h2>\n        <div class=\"recommendation\">\n            {{#gemini_analysis.text#}}\n        </div>\n        {{#gpt_deep_analysis.text#}}\n    </div>\n    \n    <div class=\"section\">\n        <h2>Detailed Report</h2>\n        <p><a href=\"{{#extract_issues.summary.report_url#}}\" target=\"_blank\">View Full Technical Report</a></p>\n    </div>\n    \n    <div class=\"section\">\n        <h2>Screenshots</h2>\n        <p>Screenshots have been captured for mobile, tablet, desktop, and 4K viewports.</p>\n    </div>\n    \n    <footer style=\"margin-top: 40px; text-align: center; color: #6b7280;\">\n        <p>Report generated by Claude Dify Checker</p>\n        <p>🤖 Generated with <a href=\"https://claude.ai/code\">Claude Code</a></p>\n    </footer>\n</body>\n</html>",
+          "variables": []
+        }
+      },
+      {
+        "id": "end",
+        "type": "end",
+        "position": { "x": 1500, "y": 100 },
+        "data": {
+          "title": "End",
+          "outputs": [
+            {
+              "variable": "report_html",
+              "type": "text",
+              "value": "{{#generate_report.output#}}"
+            },
+            {
+              "variable": "analysis_summary", 
+              "type": "text",
+              "value": "{{#gemini_analysis.text#}}"
+            },
+            {
+              "variable": "technical_details",
+              "type": "text", 
+              "value": "{{#gpt_deep_analysis.text#}}"
+            },
+            {
+              "variable": "original_report_url",
+              "type": "text",
+              "value": "{{#extract_issues.summary.report_url#}}"
+            }
+          ]
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "start-check",
+        "source": "start",
+        "target": "check_input_type"
+      },
+      {
+        "id": "check-single",
+        "source": "check_input_type",
+        "target": "call_playwright_api",
+        "sourceHandle": "true"
+      },
+      {
+        "id": "check-csv",
+        "source": "check_input_type", 
+        "target": "csv_extractor",
+        "sourceHandle": "false"
+      },
+      {
+        "id": "csv-loop",
+        "source": "csv_extractor",
+        "target": "loop_urls"
+      },
+      {
+        "id": "loop-api",
+        "source": "loop_urls",
+        "target": "call_playwright_api"
+      },
+      {
+        "id": "api-extract",
+        "source": "call_playwright_api",
+        "target": "extract_issues"
+      },
+      {
+        "id": "extract-gemini",
+        "source": "extract_issues",
+        "target": "gemini_analysis"
+      },
+      {
+        "id": "gemini-check",
+        "source": "gemini_analysis",
+        "target": "check_deep_analysis"
+      },
+      {
+        "id": "check-gpt",
+        "source": "check_deep_analysis",
+        "target": "gpt_deep_analysis", 
+        "sourceHandle": "true"
+      },
+      {
+        "id": "check-report",
+        "source": "check_deep_analysis",
+        "target": "generate_report",
+        "sourceHandle": "false"
+      },
+      {
+        "id": "gpt-report",
+        "source": "gpt_deep_analysis",
+        "target": "generate_report"
+      },
+      {
+        "id": "report-end",
+        "source": "generate_report",
+        "target": "end"
+      }
+    ]
+  },
+  "environment_variables": [
+    {
+      "key": "CLOUD_RUN_API_URL",
+      "value": "https://YOUR_CLOUD_RUN_URL",
+      "description": "URL of your deployed Cloud Run service"
+    }
+  ],
+  "instructions": {
+    "setup": [
+      "1. Deploy the Cloud Run API using the provided code",
+      "2. Update the CLOUD_RUN_API_URL in the HTTP request node",
+      "3. Configure Gemini 2.5 Flash and GPT-4o Mini providers in Dify",
+      "4. Import this workflow JSON into your Dify workspace",
+      "5. Test with a sample URL"
+    ],
+    "usage": [
+      "Single URL Analysis: Enter a URL in the start node",
+      "Batch Analysis: Upload a CSV file with URLs (one per line)",
+      "The workflow will analyze each URL and generate comprehensive reports",
+      "Results include AI-powered recommendations and technical implementation details"
+    ],
+    "cost_optimization": [
+      "Gemini 2.5 Flash is used for initial analysis (lower cost)",
+      "GPT-4o Mini is only used for critical issues requiring deep analysis",
+      "Token usage is optimized by extracting only relevant issue data",
+      "Estimated cost: $0.042 per URL analysis"
+    ]
+  }
+}

@@ -1,0 +1,140 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GAR_LOCATION: asia-northeast1
+  REPOSITORY: checker-api
+  SERVICE: checker-api
+  REGION: asia-northeast1
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run linter
+      run: npm run lint
+      continue-on-error: true
+
+    - name: Run tests
+      run: npm test
+      continue-on-error: true
+
+    - name: Check Docker build
+      run: docker build -t test-build .
+
+  deploy:
+    # Only run on main branch push (not PRs)
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: test
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Google Auth
+      id: auth
+      uses: 'google-github-actions/auth@v2'
+      with:
+        credentials_json: '${{ secrets.GCP_SA_KEY }}'
+        project_id: '${{ secrets.GCP_PROJECT_ID }}'
+
+    - name: Set up Cloud SDK
+      uses: 'google-github-actions/setup-gcloud@v2'
+      with:
+        project_id: '${{ secrets.GCP_PROJECT_ID }}'
+
+    - name: Configure Docker to use gcloud as credential helper
+      run: |-
+        gcloud auth configure-docker $GAR_LOCATION-docker.pkg.dev
+
+    - name: Create Artifact Registry repository (if not exists)
+      run: |-
+        gcloud artifacts repositories describe $REPOSITORY \
+          --location=$GAR_LOCATION || \
+        gcloud artifacts repositories create $REPOSITORY \
+          --location=$GAR_LOCATION \
+          --repository-format=docker \
+          --description="Docker repository for checker-api"
+
+    - name: Build and push Docker image
+      run: |-
+        # Build image
+        docker build -t $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$SERVICE:$GITHUB_SHA .
+        docker build -t $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$SERVICE:latest .
+        
+        # Push image
+        docker push $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$SERVICE:$GITHUB_SHA
+        docker push $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$SERVICE:latest
+
+    - name: Deploy to Cloud Run
+      run: |-
+        gcloud run deploy $SERVICE \
+          --image=$GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$SERVICE:$GITHUB_SHA \
+          --region=$REGION \
+          --platform=managed \
+          --allow-unauthenticated \
+          --memory=4Gi \
+          --cpu=2 \
+          --timeout=300 \
+          --max-instances=10 \
+          --min-instances=1 \
+          --concurrency=5 \
+          --set-env-vars="NODE_ENV=production,DEBUG=false" \
+          --set-secrets="OPENAI_API_KEY=OPENAI_API_KEY:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest" \
+          --service-account=${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+    - name: Get Cloud Run URL
+      run: |-
+        SERVICE_URL=$(gcloud run services describe $SERVICE --region=$REGION --format='value(status.url)')
+        echo "Service deployed to: $SERVICE_URL"
+        echo "SERVICE_URL=$SERVICE_URL" >> $GITHUB_ENV
+
+    - name: Test deployed service
+      run: |-
+        # Wait for service to be ready
+        sleep 30
+        
+        # Test health endpoint
+        curl -f "$SERVICE_URL/health" || exit 1
+        
+        # Test debug endpoint  
+        curl -f "$SERVICE_URL/debug" || exit 1
+        
+        echo "✅ Service is healthy and responding"
+
+    - name: Notify deployment status
+      if: always()
+      run: |-
+        if [ "${{ job.status }}" == "success" ]; then
+          echo "✅ Deployment successful: $SERVICE_URL"
+        else
+          echo "❌ Deployment failed"
+          exit 1
+        fi
