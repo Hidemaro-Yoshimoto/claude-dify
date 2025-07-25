@@ -29,8 +29,8 @@ RUN apt-get update && apt-get install -y \
 COPY package*.json ./
 COPY tsconfig.json ./
 
-# Install dependencies
-RUN npm ci --only=production && \
+# Install dependencies (ts)
+RUN npm ci && \
     npm cache clean --force
 
 # Install Playwright browsers (only Chromium for Cloud Run)
