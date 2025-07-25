@@ -154,7 +154,8 @@ export class PlaywrightService {
 
       // Check for form inputs without labels
       const inputsWithoutLabels = Array.from(document.querySelectorAll('input')).filter(input => {
-        const id = input.id;
+        const inputEl = input as HTMLInputElement;
+        const id = inputEl.id;
         return id && !document.querySelector(`label[for="${id}"]`) && !input.closest('label');
       });
 

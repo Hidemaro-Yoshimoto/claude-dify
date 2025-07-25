@@ -29,7 +29,7 @@ RUN apt-get update && apt-get install -y \
 COPY package*.json ./
 COPY tsconfig.json ./
 
-# Install dependencies (ts)
+# Install dependencies
 RUN npm ci && \
     npm cache clean --force
 

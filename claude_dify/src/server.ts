@@ -9,7 +9,7 @@ import { healthCheck, readinessCheck, debugInfo } from './controllers/healthCont
 import { errorHandler } from './middleware/errorHandler';
 
 const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = Number(process.env.PORT) || 8080;
 
 // Security middleware
 app.use(helmet({
